@@ -5,8 +5,8 @@ web app: the **Cashier POS** (take orders and check out) and a branch-scoped
 **Transaction List** with receipt reprinting. Receipts print to an EP58M 58 mm
 thermal printer over Bluetooth Classic (SPP).
 
-The app is cashier-only: only accounts with the `CASHIER` role can sign in, and
-all data is automatically scoped to that cashier's branch.
+The app supports **Cashier**, **Admin**, and **Owner** accounts. Cashiers are
+locked to their assigned branch; Admin/Owner can switch branches from the menu.
 
 ## Architecture
 
@@ -28,8 +28,8 @@ Printing    ─▶ Bluetooth Classic (SPP) ─▶ EP58M
 
 - Node.js 18+ and npm
 - Android Studio with an emulator, or a physical Android device with USB debugging
-- A running `pos-saas` backend (local or deployed)
-- A cashier account (role `CASHIER`) that has a branch assigned
+- A running `pos-saas` backend (production or local for dev)
+- A company account (Cashier, Admin, or Owner)
 
 ## Configure the API URL
 
@@ -37,13 +37,16 @@ The app reads the backend base URL from, in order of precedence:
 
 1. `EXPO_PUBLIC_API_URL` environment variable
 2. `expo.extra.apiUrl` in `app.json`
-3. Default: `http://10.0.2.2:3000` (Android emulator → host machine's localhost)
+3. Default: `https://djaja-pos-t3fx.vercel.app` (production)
 
 Set it for your environment:
 
 ```bash
-# Deployed backend
-export EXPO_PUBLIC_API_URL="https://djaja-pos.vercel.app"
+# Production (also the default in app.json)
+export EXPO_PUBLIC_API_URL="https://djaja-pos-t3fx.vercel.app"
+
+# Android emulator → host machine localhost
+export EXPO_PUBLIC_API_URL="http://10.0.2.2:3000"
 
 # Physical device on the same Wi-Fi as your dev machine (use your LAN IP)
 export EXPO_PUBLIC_API_URL="http://192.168.1.20:3000"

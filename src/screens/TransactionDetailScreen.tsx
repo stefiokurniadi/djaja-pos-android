@@ -7,7 +7,7 @@ import { money } from "@/lib/money";
 import { Button } from "@/components/Button";
 import { useAuth } from "@/auth/AuthContext";
 import { fetchTransactions } from "@/api/transactions";
-import { formatReceiptDate, receiptDataFromTransaction } from "@/printer/receipt";
+import { formatReceiptDate, receiptDataFromTransaction, orderNoFromTransactionId } from "@/printer/receipt";
 import { usePrinter } from "@/printer/PrinterContext";
 import type { Transaction } from "@/api/types";
 import type { RootStackParamList } from "@/navigation/types";
@@ -48,6 +48,8 @@ export function TransactionDetailScreen({ route }: Props) {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <View style={styles.card}>
+        <Row label="No. Pesanan" value={orderNoFromTransactionId(tx.id)} highlight />
+        <Row label="ID Trx" value={tx.id} />
         <Row label="Tanggal" value={formatReceiptDate(tx.createdAt)} />
         <Row label="Lokasi" value={tx.branch?.name ?? "—"} />
         <Row label="Pembayaran" value={tx.paymentMethod === "CASH" ? "Tunai" : "QRIS"} />
@@ -60,7 +62,9 @@ export function TransactionDetailScreen({ route }: Props) {
               <Text style={styles.itemName}>{it.productName}</Text>
               {it.variants && it.variants.length > 0 ? (
                 <Text style={styles.itemVariants} numberOfLines={2}>
-                  {it.variants.map((v) => v.name).join(", ")}
+                  {it.variants
+                    .map((v) => (v.groupName ? `${v.groupName}: ${v.name}` : v.name))
+                    .join(" · ")}
                 </Text>
               ) : null}
               <Text style={styles.itemQty}>
@@ -92,11 +96,19 @@ export function TransactionDetailScreen({ route }: Props) {
   );
 }
 
-function Row({ label, value }: { label: string; value: string }) {
+function Row({
+  label,
+  value,
+  highlight
+}: {
+  label: string;
+  value: string;
+  highlight?: boolean;
+}) {
   return (
     <View style={styles.row}>
       <Text style={styles.muted}>{label}</Text>
-      <Text style={styles.value}>{value}</Text>
+      <Text style={highlight ? styles.highlightValue : styles.value}>{value}</Text>
     </View>
   );
 }
@@ -118,6 +130,7 @@ const styles = StyleSheet.create({
   },
   row: { flexDirection: "row", justifyContent: "space-between" },
   value: { fontWeight: "600", color: colors.text },
+  highlightValue: { fontWeight: "800", fontSize: 22, color: colors.primary },
   itemRow: {
     flexDirection: "row",
     alignItems: "center",

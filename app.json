@@ -23,7 +23,7 @@
     },
     "plugins": ["expo-dev-client"],
     "extra": {
-      "apiUrl": "http://10.0.2.2:3000"
+      "apiUrl": "https://djaja-pos-t3fx.vercel.app"
     }
   }
 }

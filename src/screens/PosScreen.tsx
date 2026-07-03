@@ -22,8 +22,16 @@ import { Button } from "@/components/Button";
 import { fetchCategories, fetchProducts, checkout } from "@/api/pos";
 import { apiErrorMessage } from "@/api/client";
 import type { CartLine, Category, CreatedTransaction, Product } from "@/api/types";
+import {
+  formatVariantSummary,
+  maxPicksForGroup,
+  pickerCanConfirm,
+  productNeedsVariantPicker,
+  toVariantGroups,
+  type VariantGroupWithOptions
+} from "@/lib/variant-groups";
 import { usePrinter } from "@/printer/PrinterContext";
-import { receiptDataFromTransaction } from "@/printer/receipt";
+import { receiptDataFromTransaction, orderNoFromTransactionId } from "@/printer/receipt";
 
 const CART_WIDTH = 320;
 const GRID_GAP = 12;
@@ -39,6 +47,8 @@ function cartKey(productId: string, variantIds: string[]): string {
 }
 
 type PayStep = "review" | "cash" | "qris";
+
+const CASH_QUICK_AMOUNTS = [20_000, 50_000, 100_000, 150_000, 200_000] as const;
 
 export function PosScreen() {
   const { user, activeBranch } = useAuth();
@@ -69,10 +79,11 @@ export function PosScreen() {
   const categories = categoriesQ.data ?? [];
   const products = productsQ.data ?? [];
 
-  const variantsByCategory = useMemo(() => {
-    const map = new Map<string, NonNullable<Category["variants"]>>();
+  const groupsByCategory = useMemo(() => {
+    const map = new Map<string, VariantGroupWithOptions[]>();
     for (const c of categories) {
-      if (c.variants && c.variants.length > 0) map.set(c.id, c.variants);
+      const groups = toVariantGroups(c.variantGroups ?? []);
+      if (groups.length > 0) map.set(c.id, groups);
     }
     return map;
   }, [categories]);
@@ -150,10 +161,8 @@ export function PosScreen() {
   };
 
   const addLineToCart = (p: Product, variantIds: string[]) => {
-    const variantList = variantsByCategory.get(p.categoryId) ?? [];
-    const variantNames = variantIds.map(
-      (id) => variantList.find((v) => v.id === id)?.name ?? ""
-    );
+    const groups = groupsByCategory.get(p.categoryId) ?? [];
+    const summary = formatVariantSummary(variantIds, groups);
     const key = cartKey(p.id, variantIds);
     setCart((prev) => {
       const existing = prev[key];
@@ -167,15 +176,15 @@ export function PosScreen() {
           unitPrice: Number(p.price),
           qty: (existing?.qty ?? 0) + 1,
           variantIds,
-          variantNames
+          variantNames: summary ? [summary] : []
         }
       };
     });
   };
 
   const handleAdd = (p: Product) => {
-    const variantList = variantsByCategory.get(p.categoryId) ?? [];
-    if (p.maxVariants > 0 && variantList.length > 0) {
+    const groups = groupsByCategory.get(p.categoryId) ?? [];
+    if (productNeedsVariantPicker(p.maxVariants, groups)) {
       setPickerProduct(p);
       setPickerSelection([]);
       return;
@@ -450,24 +459,49 @@ export function PosScreen() {
 
             {payStep === "cash" ? (
               <>
-                <Text style={styles.modalTitle}>Bayar Tunai</Text>
-                <Text style={styles.modalRow}>
-                  Total: <Text style={styles.bold}>{money(total)}</Text>
-                </Text>
-                <Text style={styles.inputLabel}>Uang Pelanggan</Text>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>Pembayaran tunai</Text>
+                  <Pressable onPress={closePayModal} hitSlop={10} style={styles.closeBtn}>
+                    <Text style={styles.closeBtnText}>×</Text>
+                  </Pressable>
+                </View>
+                <Text style={styles.cashTotalLabel}>Total tagihan</Text>
+                <Text style={styles.cashTotalValue}>{money(total)}</Text>
+                <Text style={styles.inputLabel}>Uang diterima (tunai)</Text>
                 <TextInput
                   style={styles.input}
                   keyboardType="number-pad"
-                  placeholder="0"
+                  placeholder="Rp 0"
                   placeholderTextColor={colors.textMuted}
                   autoFocus
                   showSoftInputOnFocus
-                  value={cashReceived}
-                  onChangeText={setCashReceived}
+                  value={cashReceived ? money(Number(cashReceived)) : ""}
+                  onChangeText={(text) => {
+                    const digits = text.replace(/[^\d]/g, "");
+                    setCashReceived(digits);
+                  }}
                 />
-                <Text style={styles.modalRow}>
-                  Kembalian: <Text style={styles.bold}>{money(change)}</Text>
-                </Text>
+                <View style={styles.quickCashGrid}>
+                  <Pressable
+                    style={styles.quickCashBtn}
+                    onPress={() => setCashReceived(String(total))}
+                  >
+                    <Text style={styles.quickCashBtnText}>Uang pas</Text>
+                  </Pressable>
+                  {CASH_QUICK_AMOUNTS.map((amount) => (
+                    <Pressable
+                      key={amount}
+                      style={styles.quickCashBtn}
+                      onPress={() => setCashReceived(String(amount))}
+                    >
+                      <Text style={styles.quickCashBtnText}>{money(amount)}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+                <View style={styles.cashChangeBox}>
+                  <Text style={styles.cashChangeLabel}>Kembalian</Text>
+                  <Text style={styles.cashChangeValue}>{money(change)}</Text>
+                </View>
                 <View style={styles.modalActions}>
                   <Button
                     label="Kembali"
@@ -477,7 +511,7 @@ export function PosScreen() {
                     onPress={() => setPayStep("review")}
                   />
                   <Button
-                    label="Konfirmasi"
+                    label="Konfirmasi pembayaran"
                     style={styles.flex1}
                     loading={checkoutMutation.isPending}
                     disabled={!cashValid}
@@ -530,11 +564,39 @@ export function PosScreen() {
           <View style={styles.modalSheet}>
             {pickerProduct
               ? (() => {
-                  const variantList =
-                    variantsByCategory.get(pickerProduct.categoryId) ?? [];
-                  const max = pickerProduct.maxVariants;
-                  const count = pickerSelection.length;
-                  const canAddMore = count < max;
+                  const groups = groupsByCategory.get(pickerProduct.categoryId) ?? [];
+                  const activeGroups = groups.filter(
+                    (g) => g.isActive && g.variants.some((v) => v.isActive)
+                  );
+                  const canConfirm = pickerCanConfirm(
+                    pickerProduct.maxVariants,
+                    groups,
+                    pickerSelection
+                  );
+
+                  const togglePick = (group: VariantGroupWithOptions, variantId: string) => {
+                    setPickerSelection((prev) => {
+                      const inGroup = (ids: string[]) =>
+                        ids.filter((id) => group.variants.some((v) => v.id === id));
+
+                      if (group.selectionMode === "SINGLE") {
+                        const withoutGroup = prev.filter(
+                          (id) => !group.variants.some((v) => v.id === id)
+                        );
+                        const already = prev.includes(variantId);
+                        return already ? withoutGroup : [...withoutGroup, variantId];
+                      }
+
+                      const groupPicks = inGroup(prev);
+                      const max = maxPicksForGroup(group, pickerProduct.maxVariants);
+                      if (prev.includes(variantId)) {
+                        return prev.filter((id) => id !== variantId);
+                      }
+                      if (groupPicks.length >= max) return prev;
+                      return [...prev, variantId];
+                    });
+                  };
+
                   return (
                     <>
                       <View style={styles.modalHeader}>
@@ -547,49 +609,76 @@ export function PosScreen() {
                           <Text style={styles.closeBtnText}>×</Text>
                         </Pressable>
                       </View>
-                      <Text style={styles.pickerHint}>
-                        Pilih varian (maks {max}) — {count}/{max}
-                      </Text>
-                      {count > 0 ? (
-                        <View style={styles.selectedRow}>
-                          {pickerSelection.map((id, idx) => {
-                            const v = variantList.find((x) => x.id === id);
-                            return (
-                              <Pressable
-                                key={`${id}:${idx}`}
-                                style={styles.selectedChip}
-                                onPress={() =>
-                                  setPickerSelection((prev) =>
-                                    prev.filter((_, i) => i !== idx)
-                                  )
-                                }
-                              >
-                                <Text style={styles.selectedChipText}>
-                                  {v?.name ?? "?"} ×
-                                </Text>
-                              </Pressable>
-                            );
-                          })}
-                        </View>
-                      ) : null}
                       <ScrollView style={styles.pickerList}>
-                        <View style={styles.pickerGrid}>
-                          {variantList.map((v) => (
-                            <Pressable
-                              key={v.id}
-                              style={[
-                                styles.variantOption,
-                                !canAddMore && styles.variantOptionDisabled
-                              ]}
-                              disabled={!canAddMore}
-                              onPress={() =>
-                                setPickerSelection((prev) => [...prev, v.id])
-                              }
-                            >
-                              <Text style={styles.variantOptionText}>{v.name}</Text>
-                            </Pressable>
-                          ))}
-                        </View>
+                        {activeGroups.map((group) => {
+                          const groupPicks = pickerSelection.filter((id) =>
+                            group.variants.some((v) => v.id === id)
+                          );
+                          const max =
+                            group.selectionMode === "MULTIPLE"
+                              ? maxPicksForGroup(group, pickerProduct.maxVariants)
+                              : 1;
+                          const options = group.variants.filter((v) => v.isActive);
+
+                          return (
+                            <View key={group.id} style={styles.groupSection}>
+                              <Text style={styles.groupTitle}>{group.name}</Text>
+                              <Text style={styles.pickerHint}>
+                                {group.selectionMode === "SINGLE"
+                                  ? "Pilih 1"
+                                  : `${groupPicks.length}/${max} scoop`}
+                              </Text>
+                              {groupPicks.length > 0 ? (
+                                <View style={styles.selectedRow}>
+                                  {groupPicks.map((id, idx) => {
+                                    const v = options.find((x) => x.id === id);
+                                    return (
+                                      <Pressable
+                                        key={`${id}:${idx}`}
+                                        style={styles.selectedChip}
+                                        onPress={() => togglePick(group, id)}
+                                      >
+                                        <Text style={styles.selectedChipText}>
+                                          {v?.name ?? "?"} ×
+                                        </Text>
+                                      </Pressable>
+                                    );
+                                  })}
+                                </View>
+                              ) : null}
+                              <View style={styles.pickerGrid}>
+                                {options.map((v) => {
+                                  const selected = pickerSelection.includes(v.id);
+                                  const atLimit =
+                                    group.selectionMode === "MULTIPLE" &&
+                                    !selected &&
+                                    groupPicks.length >= max;
+                                  return (
+                                    <Pressable
+                                      key={v.id}
+                                      style={[
+                                        styles.variantOption,
+                                        selected && styles.variantOptionSelected,
+                                        atLimit && styles.variantOptionDisabled
+                                      ]}
+                                      disabled={atLimit}
+                                      onPress={() => togglePick(group, v.id)}
+                                    >
+                                      <Text
+                                        style={[
+                                          styles.variantOptionText,
+                                          selected && styles.variantOptionTextSelected
+                                        ]}
+                                      >
+                                        {v.name}
+                                      </Text>
+                                    </Pressable>
+                                  );
+                                })}
+                              </View>
+                            </View>
+                          );
+                        })}
                       </ScrollView>
                       <View style={styles.modalActions}>
                         <Button
@@ -599,9 +688,9 @@ export function PosScreen() {
                           onPress={() => setPickerProduct(null)}
                         />
                         <Button
-                          label={`Tambah (${count}/${max})`}
+                          label="Tambah"
                           style={styles.flex1}
-                          disabled={count === 0}
+                          disabled={!canConfirm}
                           onPress={confirmPicker}
                         />
                       </View>
@@ -621,10 +710,40 @@ export function PosScreen() {
             <Text style={styles.successTitle}>Pembayaran Berhasil</Text>
             {doneTx ? (
               <>
+                <Text style={styles.orderNoLabel}>No. Pesanan</Text>
+                <Text style={styles.orderNoValue}>
+                  {orderNoFromTransactionId(doneTx.id)}
+                </Text>
+                <Text style={styles.trxIdText}>ID: {doneTx.id}</Text>
+                <View style={styles.itemsBox}>
+                  {doneTx.items.map((it) => (
+                    <View key={it.id} style={styles.itemRow}>
+                      <View style={styles.flex1}>
+                        <Text style={styles.itemName} numberOfLines={1}>
+                          {it.productName}
+                        </Text>
+                        {it.variants && it.variants.length > 0 ? (
+                          <Text style={styles.itemVariants} numberOfLines={2}>
+                            {it.variants
+                              .map((v) =>
+                                v.groupName ? `${v.groupName}: ${v.name}` : v.name
+                              )
+                              .join(" · ")}
+                          </Text>
+                        ) : null}
+                        <Text style={styles.itemQty}>
+                          {it.quantity} × {money(Number(it.unitPrice))}
+                        </Text>
+                      </View>
+                      <Text style={styles.itemLineTotal}>{money(Number(it.lineTotal))}</Text>
+                    </View>
+                  ))}
+                </View>
                 <View style={styles.summaryBox}>
                   <SummaryRow
                     label="Pembayaran"
                     value={doneTx.paymentMethod === "CASH" ? "Tunai" : "QRIS"}
+                    isMoney={false}
                   />
                   <SummaryRow label="Total" value={money(Number(doneTx.total))} />
                   {doneTx.paymentMethod === "CASH" ? (
@@ -636,29 +755,10 @@ export function PosScreen() {
                       <SummaryRow
                         label="Kembalian"
                         value={money(Number(doneTx.changeAmount ?? 0))}
+                        highlight
                       />
                     </>
                   ) : null}
-                </View>
-                <View style={styles.itemsBox}>
-                  {doneTx.items.map((it) => (
-                    <View key={it.id} style={styles.itemRow}>
-                      <View style={styles.flex1}>
-                        <Text style={styles.itemName} numberOfLines={1}>
-                          {it.productName}
-                        </Text>
-                        {it.variants && it.variants.length > 0 ? (
-                          <Text style={styles.itemVariants} numberOfLines={2}>
-                            {it.variants.map((v) => v.name).join(", ")}
-                          </Text>
-                        ) : null}
-                        <Text style={styles.itemQty}>
-                          {it.quantity} × {money(Number(it.unitPrice))}
-                        </Text>
-                      </View>
-                      <Text style={styles.bold}>{money(Number(it.lineTotal))}</Text>
-                    </View>
-                  ))}
                 </View>
               </>
             ) : null}
@@ -754,11 +854,28 @@ function CategoryChip({
   );
 }
 
-function SummaryRow({ label, value }: { label: string; value: string }) {
+function SummaryRow({
+  label,
+  value,
+  highlight,
+  isMoney = true
+}: {
+  label: string;
+  value: string;
+  highlight?: boolean;
+  isMoney?: boolean;
+}) {
   return (
-    <View style={styles.summaryRow}>
-      <Text style={styles.mutedInline}>{label}</Text>
-      <Text style={styles.bold}>{value}</Text>
+    <View style={[styles.summaryRow, highlight && styles.summaryRowHighlight]}>
+      <Text style={[styles.summaryLabel, highlight && styles.summaryHighlightLabel]}>{label}</Text>
+      <Text
+        style={[
+          isMoney ? styles.moneyValue : styles.summaryTextValue,
+          highlight && styles.summaryHighlightValue
+        ]}
+      >
+        {value}
+      </Text>
     </View>
   );
 }
@@ -855,7 +972,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginTop: 8
   },
-  productPrice: { fontSize: 15, fontWeight: "800", color: colors.primary },
+  productPrice: { fontSize: 17, fontWeight: "800", color: colors.primary },
   addBtn: {
     width: 32,
     height: 32,
@@ -918,7 +1035,7 @@ const styles = StyleSheet.create({
   cartRowTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   cartItemName: { flex: 1, fontSize: 14, fontWeight: "700", color: colors.text },
   removeX: { fontSize: 20, color: colors.textMuted, paddingLeft: 8, lineHeight: 20 },
-  cartItemMeta: { fontSize: 12, color: colors.textMuted, marginTop: 1 },
+  cartItemMeta: { fontSize: 14, color: colors.textMuted, marginTop: 1, fontWeight: "600" },
   cartVariants: { fontSize: 12, color: colors.primary, fontWeight: "600", marginTop: 1 },
   cartRowBottom: {
     flexDirection: "row",
@@ -938,7 +1055,7 @@ const styles = StyleSheet.create({
   },
   qtyBtnText: { fontSize: 18, fontWeight: "700", color: colors.text },
   qtyValue: { minWidth: 18, textAlign: "center", fontWeight: "700", fontSize: 14 },
-  lineTotal: { fontSize: 14, fontWeight: "800", color: colors.text },
+  lineTotal: { fontSize: 17, fontWeight: "800", color: colors.text },
   cartFooter: {
     padding: 16,
     gap: 8,
@@ -947,7 +1064,7 @@ const styles = StyleSheet.create({
   },
   totalsRow: { flexDirection: "row", justifyContent: "space-between" },
   totalsLabel: { fontSize: 14, color: colors.textMuted },
-  totalsValue: { fontSize: 14, fontWeight: "600", color: colors.text },
+  totalsValue: { fontSize: 16, fontWeight: "700", color: colors.text },
   grandTotalRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -958,7 +1075,7 @@ const styles = StyleSheet.create({
     borderTopColor: colors.border
   },
   grandTotalLabel: { fontSize: 16, fontWeight: "800", color: colors.text },
-  grandTotalValue: { fontSize: 22, fontWeight: "900", color: colors.primary },
+  grandTotalValue: { fontSize: 26, fontWeight: "900", color: colors.primary },
   payBtn: { marginTop: 8, height: 54 },
 
   modalBackdrop: {
@@ -999,9 +1116,49 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 12,
-    fontSize: 18,
+    fontSize: 20,
+    fontWeight: "700",
     color: colors.text
   },
+  cashTotalLabel: { fontSize: 13, color: colors.textMuted, marginTop: 4 },
+  cashTotalValue: {
+    fontSize: 32,
+    fontWeight: "900",
+    color: colors.primaryDark,
+    marginBottom: 4
+  },
+  quickCashGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 4
+  },
+  quickCashBtn: {
+    width: "31%",
+    flexGrow: 1,
+    minHeight: 44,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 6,
+    paddingVertical: 10
+  },
+  quickCashBtnText: { fontSize: 13, fontWeight: "600", color: colors.text, textAlign: "center" },
+  cashChangeBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: colors.bg,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginTop: 4
+  },
+  cashChangeLabel: { fontSize: 15, fontWeight: "600", color: colors.text },
+  cashChangeValue: { fontSize: 20, fontWeight: "800", color: colors.text },
   modalActions: { flexDirection: "row", gap: 8, marginTop: 4 },
   payPrompt: { fontSize: 14, fontWeight: "600", color: colors.text, marginTop: 4 },
   reviewList: { maxHeight: 200 },
@@ -1016,7 +1173,7 @@ const styles = StyleSheet.create({
   reviewName: { fontSize: 14, fontWeight: "600", color: colors.text },
   reviewVariants: { fontSize: 12, color: colors.primary, fontWeight: "600" },
   reviewMeta: { fontSize: 12, color: colors.textMuted },
-  reviewTotal: { fontSize: 14, fontWeight: "700", color: colors.text },
+  reviewTotal: { fontSize: 17, fontWeight: "800", color: colors.text },
   reviewTotalRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1028,10 +1185,48 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: "800",
     color: colors.primary,
-    textAlign: "center"
+    textAlign: "center",
+    marginBottom: 4
   },
-  summaryBox: { gap: 6 },
-  summaryRow: { flexDirection: "row", justifyContent: "space-between" },
+  orderNoLabel: {
+    fontSize: 13,
+    color: colors.textMuted,
+    textAlign: "center",
+    marginTop: 4
+  },
+  orderNoValue: {
+    fontSize: 40,
+    fontWeight: "900",
+    color: colors.primary,
+    textAlign: "center",
+    letterSpacing: 2
+  },
+  trxIdText: {
+    fontSize: 11,
+    color: colors.textMuted,
+    textAlign: "center",
+    marginBottom: 8
+  },
+  summaryBox: { gap: 8, marginTop: 4 },
+  summaryRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center"
+  },
+  summaryRowHighlight: {
+    backgroundColor: "#e8f4f3",
+    marginHorizontal: -8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: colors.primary
+  },
+  summaryLabel: { fontSize: 14, color: colors.textMuted },
+  summaryHighlightLabel: { fontSize: 15, fontWeight: "700", color: colors.primaryDark },
+  summaryTextValue: { fontSize: 15, fontWeight: "700", color: colors.text },
+  moneyValue: { fontSize: 18, fontWeight: "800", color: colors.text },
+  summaryHighlightValue: { fontSize: 24, fontWeight: "900", color: colors.primary },
   itemsBox: { borderWidth: 1, borderColor: colors.border, borderRadius: 12 },
   itemRow: {
     flexDirection: "row",
@@ -1044,11 +1239,14 @@ const styles = StyleSheet.create({
   },
   itemName: { fontSize: 14, fontWeight: "600", color: colors.text },
   itemVariants: { fontSize: 12, color: colors.primary, fontWeight: "600", marginTop: 2 },
-  itemQty: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  itemQty: { fontSize: 14, color: colors.textMuted, marginTop: 2, fontWeight: "600" },
+  itemLineTotal: { fontSize: 18, fontWeight: "800", color: colors.text },
 
   pickerHint: { fontSize: 13, color: colors.textMuted, marginTop: 4 },
-  pickerList: { maxHeight: 240, marginTop: 8 },
+  pickerList: { maxHeight: 320, marginTop: 8 },
   pickerGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  groupSection: { marginBottom: 16 },
+  groupTitle: { fontSize: 15, fontWeight: "700", color: colors.text },
   variantOption: {
     borderWidth: 1,
     borderColor: colors.border,
@@ -1058,8 +1256,13 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     minWidth: "47%"
   },
+  variantOptionSelected: {
+    borderColor: colors.primary,
+    backgroundColor: "rgba(70, 157, 152, 0.1)"
+  },
   variantOptionDisabled: { opacity: 0.4 },
   variantOptionText: { fontSize: 14, fontWeight: "600", color: colors.text },
+  variantOptionTextSelected: { color: colors.primaryDark },
   selectedRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
   selectedChip: {
     backgroundColor: colors.primary,

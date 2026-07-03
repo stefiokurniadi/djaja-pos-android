@@ -14,7 +14,7 @@ import { useAuth } from "@/auth/AuthContext";
 import { colors } from "@/lib/colors";
 import { money } from "@/lib/money";
 import { fetchTransactions } from "@/api/transactions";
-import { formatReceiptDate } from "@/printer/receipt";
+import { formatReceiptDate, orderNoFromTransactionId } from "@/printer/receipt";
 import { apiErrorMessage } from "@/api/client";
 import type { Transaction } from "@/api/types";
 import type { RootStackParamList } from "@/navigation/types";
@@ -63,6 +63,9 @@ export function TransactionsScreen({ navigation }: Props) {
             onPress={() => navigation.navigate("TransactionDetail", { id: item.id })}
           >
             <View style={styles.flex1}>
+              <Text style={styles.orderNo}>
+                No. {orderNoFromTransactionId(item.id)}
+              </Text>
               <Text style={styles.date}>{formatReceiptDate(item.createdAt)}</Text>
               <Text style={styles.meta}>
                 {item.paymentMethod === "CASH" ? "Tunai" : "QRIS"} · {itemCount} item
@@ -93,6 +96,7 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     gap: 10
   },
+  orderNo: { fontSize: 18, fontWeight: "800", color: colors.primary },
   date: { fontSize: 15, fontWeight: "700", color: colors.text },
   meta: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
   total: { fontSize: 15, fontWeight: "700", color: colors.text }

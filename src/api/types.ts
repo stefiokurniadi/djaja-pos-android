@@ -17,17 +17,29 @@ export type AuthUser = {
 export type Variant = {
   id: string;
   categoryId: string;
+  variantGroupId: string | null;
   name: string;
   priceDelta: string;
   isActive: boolean;
   sortOrder: number;
 };
 
+export type VariantGroup = {
+  id: string;
+  categoryId: string;
+  name: string;
+  selectionMode: "SINGLE" | "MULTIPLE";
+  maxPicks: number | null;
+  isActive: boolean;
+  sortOrder: number;
+  variants?: Variant[];
+};
+
 export type Category = {
   id: string;
   name: string;
   companyId: string;
-  variants?: Variant[];
+  variantGroups?: VariantGroup[];
 };
 
 export type Product = {
@@ -47,6 +59,7 @@ export type Product = {
 export type SelectedVariant = {
   variantId: string | null;
   name: string;
+  groupName?: string;
   priceDelta: string;
 };
 

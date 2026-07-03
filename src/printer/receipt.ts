@@ -10,6 +10,8 @@ export type ReceiptItem = {
 };
 
 export type ReceiptData = {
+  transactionId: string;
+  orderNo: string;
   transactionDate: string;
   storeName: string;
   branchName: string;
@@ -47,6 +49,8 @@ export function receiptLabels(locale?: Locale) {
     payment: en ? "Payment" : "Pembayaran",
     cash: en ? "Cash" : "Tunai",
     qris: "QRIS",
+    orderNo: en ? "Order No." : "No. Pesanan",
+    trxId: en ? "Trx ID" : "ID Trx",
     item: en ? "Item" : "Item",
     subtotal: en ? "Subtotal" : "Subtotal",
     tax: en ? "Tax" : "Pajak",
@@ -93,6 +97,8 @@ export function buildReceiptText(data: ReceiptData): string {
     data.storeName.toUpperCase(),
     labels.title,
     "=".repeat(RECEIPT_LINE_WIDTH),
+    padReceiptLine(labels.orderNo, data.orderNo),
+    `${labels.trxId}: ${data.transactionId}`,
     `${labels.date}: ${formatReceiptDate(data.transactionDate, data.locale)}`,
     `${labels.branch}: ${data.branchName}`,
     "-".repeat(RECEIPT_LINE_WIDTH),
@@ -132,8 +138,13 @@ export function buildReceiptText(data: ReceiptData): string {
   return lines.join("\n");
 }
 
+export function orderNoFromTransactionId(id: string): string {
+  return id.slice(-4);
+}
+
 export function receiptDataFromTransaction(
   tx: {
+    id: string;
     paymentMethod: PaymentMethod;
     subtotal: string;
     taxAmount: string;
@@ -146,7 +157,7 @@ export function receiptDataFromTransaction(
       quantity: number;
       unitPrice: string;
       lineTotal: string;
-      variants?: { variantId: string | null; name: string; priceDelta: string }[] | null;
+      variants?: { variantId: string | null; name: string; groupName?: string; priceDelta: string }[] | null;
     }[];
   },
   meta: { storeName: string; branchName: string; locale?: Locale }
@@ -158,6 +169,8 @@ export function receiptDataFromTransaction(
     tx.paymentMethod === "CASH" ? Number(tx.changeAmount ?? 0) : 0;
 
   return {
+    transactionId: tx.id,
+    orderNo: orderNoFromTransactionId(tx.id),
     transactionDate: tx.createdAt,
     storeName: meta.storeName,
     branchName: meta.branchName,
@@ -173,7 +186,9 @@ export function receiptDataFromTransaction(
       quantity: it.quantity,
       unitPrice: Number(it.unitPrice),
       lineTotal: Number(it.lineTotal),
-      variants: it.variants?.map((v) => v.name)
+      variants: it.variants?.map((v) =>
+        v.groupName ? `${v.groupName}: ${v.name}` : v.name
+      )
     }))
   };
 }
