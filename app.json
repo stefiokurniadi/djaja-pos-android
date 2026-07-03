@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "DjajaPOS Kasir",
+    "slug": "djaja-pos-android",
+    "version": "1.0.0",
+    "orientation": "landscape",
+    "userInterfaceStyle": "light",
+    "scheme": "djajapos",
+    "newArchEnabled": false,
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#469d98"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "android": {
+      "package": "com.djajapos.cashier",
+      "permissions": [
+        "android.permission.BLUETOOTH",
+        "android.permission.BLUETOOTH_ADMIN",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.BLUETOOTH_SCAN"
+      ]
+    },
+    "plugins": ["expo-dev-client"],
+    "extra": {
+      "apiUrl": "http://10.0.2.2:3000"
+    }
+  }
+}
